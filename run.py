@@ -22,19 +22,23 @@ from nipype.interfaces.ants import N4BiasFieldCorrection, ApplyTransformsToPoint
 from nipype.interfaces.io import FreeSurferSource
 
 # niworkflows
-from ..data import get_template
-from .ants import init_brain_extraction_wf
-from ..interfaces.ants import AI, AntsJointFusion
-from ..interfaces.fixes import (
+from templateflow.api import get as get_template
+from niworkflows.interfaces.ants import AI, AntsJointFusion
+from niworkflows.interfaces.fixes import (
     FixHeaderRegistration as Registration,
     FixHeaderApplyTransforms as ApplyTransforms,
 )
-from ..interfaces.bids import DerivativesDataSink
-from ..interfaces.surf import (
+from niworkflows.interfaces.bids import DerivativesDataSink as DDS
+from niworkflows.interfaces.surf import (
     GiftiToCSV, CSVToGifti, SurfacesToPointCloud, PoissonRecon,
     UnzipJoinedSurfaces, PLYtoGifti,
 )
-from .freesurfer import init_gifti_surface_wf
+from niworkflows.anat.ants import init_brain_extraction_wf
+from niworkflows.anat.freesurfer import init_gifti_surface_wf
+
+
+class DerivativesDataSink(DDS):
+    out_path_base = 'templateflowreg'
 
 
 def init_templateflow_wf(
@@ -82,26 +86,21 @@ def init_templateflow_wf(
 
 
     """
-
-    # Get path to templates
-    tpl_ref_root = get_template(ref_template)
-    tpl_mov_root = get_template(mov_template)
-
-    tpl_ref = str(
-        tpl_ref_root / ('tpl-%s_space-MNI_res-01_%s.nii.gz' % (ref_template, modality)))
-    tpl_ref_mask = str(
-        tpl_ref_root / ('tpl-%s_space-MNI_res-01_brainmask.nii.gz' % ref_template))
-    tpl_mov = str(
-        tpl_mov_root / ('tpl-%s_space-MNI_res-01_%s.nii.gz' % (mov_template, modality)))
-    tpl_mov_mask = str(
-        tpl_mov_root / ('tpl-%s_space-MNI_res-01_brainmask.nii.gz' % mov_template))
+    # number of participants
     ninputs = len(participant_label)
-
     ants_env = {
         'NSLOTS': '%d' % omp_nthreads,
         'ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS': '%d' % omp_nthreads,
         'OMP_NUM_THREADS': '%d' % omp_nthreads,
     }
+
+    # Get path to templates
+    tpl_ref = str(get_template(ref_template, suffix=modality, desc=None, resolution=1))
+    tpl_ref_mask = str(get_template(ref_template, suffix='mask',
+                                    desc='brain', resolution=1))
+    tpl_mov = str(get_template(mov_template, suffix=modality, desc=None, resolution=1))
+    tpl_mov_mask = str(get_template(mov_template, suffix='mask',
+                                    desc='brain', resolution=1))
 
     wf = pe.Workflow(name)
     inputnode = pe.Node(niu.IdentityInterface(fields=['participant_label']),
@@ -116,7 +115,7 @@ def init_templateflow_wf(
         in_template=ref_template,
         omp_nthreads=omp_nthreads,
         mem_gb=mem_gb,
-        modality=modality[:2],
+        bids_suffix=modality,
         name='reference_bex',
     )
 
@@ -124,7 +123,7 @@ def init_templateflow_wf(
         in_template=mov_template,
         omp_nthreads=omp_nthreads,
         mem_gb=mem_gb,
-        modality=modality[:2],
+        bids_suffix=modality,
         name='moving_bex',
     )
 
@@ -405,10 +404,10 @@ def init_templateflow_wf(
         (ref_bex, ref_inu, [('outputnode.out_mask', 'mask_image')]),
         (ref_inu, ref_norm, [('output_image', 'moving_image')]),
         (ref_bex, ref_norm, [('outputnode.out_mask', 'moving_image_masks'),
-                             ('outputnode.out_fwd_xfm', 'initial_moving_transform')]),
+                             ('norm.forward_transforms', 'initial_moving_transform')]),
         (ref_inu, mov_norm, [('output_image', 'moving_image')]),
         (mov_bex, mov_norm, [('outputnode.out_mask', 'moving_image_masks'),
-                             ('outputnode.out_fwd_xfm', 'initial_moving_transform')]),
+                             ('norm.forward_transforms', 'initial_moving_transform')]),
         (init_aff, flow, [('output_transform', 'initial_moving_transform')]),
         (ref_norm, ref_buffer, [('warped_image', 'fixed_image')]),
         (mov_norm, mov_buffer, [('warped_image', 'moving_image')]),
@@ -610,7 +609,7 @@ def cli():
             'Input BIDS directory "%s" does not exist.' % bids_dir)
 
     if not opts.output_dir:
-        output_dir = bids_dir / 'derivatives' / 'templateflow_0.0.1'
+        output_dir = bids_dir / 'derivatives' / 'templateflow-0.0.1'
     else:
         output_dir = opts.output_dir.resolve()
 
@@ -646,3 +645,7 @@ def cli():
     )
     tf.base_dir = str(opts.work_dir.resolve())
     tf.run(**plugin_settings)
+
+
+if __name__ == '__main__':
+    cli()
