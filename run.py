@@ -18,7 +18,7 @@ from nipype import logging as nlogging
 from nipype.pipeline import engine as pe
 from nipype.interfaces import utility as niu
 from nipype.interfaces import freesurfer as fs
-from nipype.interfaces.ants import N4BiasFieldCorrection, ApplyTransformsToPoints
+from nipype.interfaces.ants import ApplyTransformsToPoints
 from nipype.interfaces.io import FreeSurferSource
 
 # niworkflows
@@ -53,7 +53,7 @@ def init_templateflow_wf(
     modality='T1w',
     normalization_quality='precise',
     name='templateflow_wf',
-    fs_subjects_dir=getenv('SUBJECTS_DIR'),
+    fs_subjects_dir=None,
 ):
     """
     A Nipype workflow to perform image registration between two templates
@@ -127,13 +127,6 @@ def init_templateflow_wf(
         name='moving_bex',
     )
 
-    ref_inu = pe.Node(
-        N4BiasFieldCorrection(
-            dimension=3, save_bias=True, copy_header=True,
-            n_iterations=[50] * 5, convergence_threshold=1e-7, shrink_factor=4,
-            bspline_fitting_distance=200, environ=ants_env),
-        n_procs=omp_nthreads, name='ref_inu')
-
     ref_norm = pe.Node(
         Registration(
             from_file=pkgr.resource_filename(
@@ -195,97 +188,6 @@ def init_templateflow_wf(
         [v] * ninputs for v in flow.inputs.sampling_strategy]
     flow.inputs.environ = ants_env
 
-    fssource = pe.Node(
-        FreeSurferSource(subjects_dir=str(fs_subjects_dir)),
-        name='fssource', run_without_submitting=True)
-    tonative = pe.Node(fs.Label2Vol(subjects_dir=str(fs_subjects_dir)),
-                       name='tonative')
-    tonii = pe.Node(
-        fs.MRIConvert(out_type='niigz', resample_type='nearest'),
-        name='tonii')
-
-    ref_aparc = pe.Node(
-        ApplyTransforms(interpolation='MultiLabel', float=True,
-                        reference_image=tpl_ref, environ=ants_env),
-        name='ref_aparc', mem_gb=1, n_procs=omp_nthreads
-    )
-
-    mov_aparc = pe.Node(
-        ApplyTransforms(interpolation='MultiLabel', float=True,
-                        reference_image=tpl_mov, environ=ants_env),
-        name='mov_aparc', mem_gb=1, n_procs=omp_nthreads
-    )
-
-    ref_aparc_buffer = pe.JoinNode(
-        niu.IdentityInterface(fields=['aparc']),
-        joinsource='inputnode', joinfield='aparc', name='ref_aparc_buffer')
-
-    ref_join_labels = pe.Node(
-        AntsJointFusion(
-            target_image=[tpl_ref],
-            out_label_fusion='merged_aparc.nii.gz',
-            out_intensity_fusion_name_format='merged_aparc_intensity_%d.nii.gz',
-            out_label_post_prob_name_format='merged_aparc_posterior_%d.nii.gz',
-            out_atlas_voting_weight_name_format='merged_aparc_weight_%d.nii.gz',
-            environ=ants_env,
-        ),
-        name='ref_join_labels', n_procs=omp_nthreads)
-
-    ref_join_labels_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name,
-            suffix='dtissue', desc='aparc', keep_dtype=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
-        name='ref_join_labels_ds', run_without_submitting=True)
-
-    ref_join_probs_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name,
-            suffix='probtissue', desc='aparc', keep_dtype=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
-        name='ref_join_probs_ds', run_without_submitting=True)
-
-    # ref_join_voting_ds = pe.Node(
-    #     DerivativesDataSink(
-    #         base_directory=str(output_dir.parent),
-    #         out_path_base=output_dir.name, space=ref_template,
-    #         suffix='probtissue', desc='aparcvoting', keep_dtype=False,
-    #         source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
-    #     name='ref_join_voting_ds', run_without_submitting=True)
-
-    mov_aparc_buffer = pe.JoinNode(
-        niu.IdentityInterface(fields=['aparc']),
-        joinsource='inputnode', joinfield='aparc', name='mov_aparc_buffer')
-
-    mov_join_labels = pe.Node(
-        AntsJointFusion(
-            target_image=[tpl_mov],
-            out_label_fusion='merged_aparc.nii.gz',
-            out_intensity_fusion_name_format='merged_aparc_intensity_%d.nii.gz',
-            out_label_post_prob_name_format='merged_aparc_posterior_%d.nii.gz',
-            out_atlas_voting_weight_name_format='merged_aparc_weight_%d.nii.gz',
-            environ=ants_env,
-        ),
-        name='mov_join_labels', n_procs=omp_nthreads)
-
-    mov_join_labels_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name,
-            suffix='dtissue', desc='aparc', keep_dtype=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
-        name='mov_join_labels_ds', run_without_submitting=True)
-
-    mov_join_probs_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name,
-            suffix='probtissue', desc='aparc', keep_dtype=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
-        name='mov_join_probs_ds', run_without_submitting=True)
-
     # Datasinking
     ref_norm_ds = pe.Node(
         DerivativesDataSink(base_directory=str(output_dir.parent),
@@ -301,111 +203,14 @@ def init_templateflow_wf(
         name='mov_norm_ds', run_without_submitting=True
     )
 
-    ref_aparc_ds = pe.Node(
-        DerivativesDataSink(base_directory=str(output_dir.parent),
-                            out_path_base=output_dir.name, space=ref_template,
-                            suffix='dtissue', desc='aparc', keep_dtype=False),
-        name='ref_aparc_ds', run_without_submitting=True
-    )
-
-    mov_aparc_ds = pe.Node(
-        DerivativesDataSink(base_directory=str(output_dir.parent),
-                            out_path_base=output_dir.name, space=mov_template,
-                            suffix='dtissue', desc='aparc', keep_dtype=False),
-        name='mov_aparc_ds', run_without_submitting=True
-    )
-
-    # Extract surfaces
-    cifti_wf = init_gifti_surface_wf(
-        name='cifti_surfaces',
-        subjects_dir=str(fs_subjects_dir))
-
-    # Move surfaces to template spaces
-    gii2csv = pe.MapNode(GiftiToCSV(itk_lps=True),
-                         iterfield=['in_file'], name='gii2csv')
-    ref_map_surf = pe.MapNode(
-        ApplyTransformsToPoints(dimension=3, environ=ants_env),
-        n_procs=omp_nthreads, name='ref_map_surf', iterfield=['input_file'])
-    ref_csv2gii = pe.MapNode(
-        CSVToGifti(itk_lps=True),
-        name='ref_csv2gii', iterfield=['in_file', 'gii_file'])
-    ref_surfs_buffer = pe.JoinNode(
-        niu.IdentityInterface(fields=['surfaces']),
-        joinsource='inputnode', joinfield='surfaces', name='ref_surfs_buffer')
-    ref_surfs_unzip = pe.Node(UnzipJoinedSurfaces(), name='ref_surfs_unzip',
-                              run_without_submitting=True)
-    ref_ply = pe.MapNode(SurfacesToPointCloud(), name='ref_ply',
-                         iterfield=['in_files'])
-    ref_recon = pe.MapNode(PoissonRecon(), name='ref_recon',
-                           iterfield=['in_file'])
-    ref_avggii = pe.MapNode(PLYtoGifti(), name='ref_avggii',
-                            iterfield=['in_file', 'surf_key'])
-    ref_smooth = pe.MapNode(fs.SmoothTessellation(), name='ref_smooth',
-                            iterfield=['in_file'])
-
-    ref_surfs_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name, space=ref_template,
-            keep_dtype=False, compress=False),
-        name='ref_surfs_ds', run_without_submitting=True)
-    ref_avg_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name, space=ref_template,
-            keep_dtype=False, compress=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
-        name='ref_avg_ds', run_without_submitting=True)
-
-    mov_map_surf = pe.MapNode(
-        ApplyTransformsToPoints(dimension=3, environ=ants_env),
-        n_procs=omp_nthreads, name='mov_map_surf', iterfield=['input_file'])
-    mov_csv2gii = pe.MapNode(
-        CSVToGifti(itk_lps=True),
-        name='mov_csv2gii', iterfield=['in_file', 'gii_file'])
-    mov_surfs_buffer = pe.JoinNode(
-        niu.IdentityInterface(fields=['surfaces']),
-        joinsource='inputnode', joinfield='surfaces', name='mov_surfs_buffer')
-    mov_surfs_unzip = pe.Node(UnzipJoinedSurfaces(), name='mov_surfs_unzip',
-                              run_without_submitting=True)
-    mov_ply = pe.MapNode(SurfacesToPointCloud(), name='mov_ply',
-                         iterfield=['in_files'])
-    mov_recon = pe.MapNode(PoissonRecon(), name='mov_recon',
-                           iterfield=['in_file'])
-    mov_avggii = pe.MapNode(PLYtoGifti(), name='mov_avggii',
-                            iterfield=['in_file', 'surf_key'])
-    mov_smooth = pe.MapNode(fs.SmoothTessellation(), name='mov_smooth',
-                            iterfield=['in_file'])
-
-    mov_surfs_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name, space=mov_template,
-            keep_dtype=False, compress=False),
-        name='mov_surfs_ds', run_without_submitting=True)
-    mov_avg_ds = pe.Node(
-        DerivativesDataSink(
-            base_directory=str(output_dir.parent),
-            out_path_base=output_dir.name, space=mov_template,
-            keep_dtype=False, compress=False,
-            source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
-        name='mov_avg_ds', run_without_submitting=True)
-
     wf.connect([
         (inputnode, pick_file, [('participant_label', 'participant_label')]),
-        (inputnode, fssource, [(('participant_label', _sub_decorate), 'subject_id')]),
-        (inputnode, cifti_wf, [
-            (('participant_label', _sub_decorate), 'inputnode.subject_id')]),
-        (pick_file, cifti_wf, [('out', 'inputnode.in_t1w')]),
         (pick_file, ref_bex, [('out', 'inputnode.in_files')]),
         (pick_file, mov_bex, [('out', 'inputnode.in_files')]),
-        (pick_file, ref_inu, [('out', 'input_image')]),
-        (pick_file, tonii, [('out', 'reslice_like')]),
-        (ref_bex, ref_inu, [('outputnode.out_mask', 'mask_image')]),
-        (ref_inu, ref_norm, [('output_image', 'moving_image')]),
-        (ref_bex, ref_norm, [('outputnode.out_mask', 'moving_image_masks'),
+        (ref_bex, ref_norm, [('outputnode.bias_corrected', 'moving_image'),
+                             ('outputnode.out_mask', 'moving_image_masks'),
                              ('norm.forward_transforms', 'initial_moving_transform')]),
-        (ref_inu, mov_norm, [('output_image', 'moving_image')]),
+        (ref_bex, mov_norm, [('outputnode.bias_corrected', 'moving_image')]),
         (mov_bex, mov_norm, [('outputnode.out_mask', 'moving_image_masks'),
                              ('norm.forward_transforms', 'initial_moving_transform')]),
         (init_aff, flow, [('output_transform', 'initial_moving_transform')]),
@@ -413,90 +218,280 @@ def init_templateflow_wf(
         (mov_norm, mov_buffer, [('warped_image', 'moving_image')]),
         (ref_buffer, flow, [('fixed_image', 'fixed_image')]),
         (mov_buffer, flow, [('moving_image', 'moving_image')]),
-        # Select DKT aparc
-        (fssource, tonative, [(('aparc_aseg', _last), 'seg_file'),
-                              ('rawavg', 'template_file'),
-                              ('aseg', 'reg_header')]),
-        (tonative, tonii, [('vol_label_file', 'in_file')]),
-        (tonii, ref_aparc, [('out_file', 'input_image')]),
-        (tonii, mov_aparc, [('out_file', 'input_image')]),
-        (ref_norm, ref_aparc, [('composite_transform', 'transforms')]),
-        (mov_norm, mov_aparc, [('composite_transform', 'transforms')]),
-        (ref_buffer, ref_join_labels, [
-            ('fixed_image', 'atlas_image')]),
-        (ref_aparc, ref_aparc_buffer, [('output_image', 'aparc')]),
-        (ref_aparc_buffer, ref_join_labels, [
-            ('aparc', 'atlas_segmentation_image')]),
-        (mov_buffer, mov_join_labels, [
-            ('moving_image', 'atlas_image')]),
-        (mov_aparc, mov_aparc_buffer, [('output_image', 'aparc')]),
-        (mov_aparc_buffer, mov_join_labels, [
-            ('aparc', 'atlas_segmentation_image')]),
-        # Datasinks
-        (ref_join_labels, ref_join_labels_ds, [('out_label_fusion', 'in_file')]),
-        (ref_join_labels, ref_join_probs_ds, [
-            ('out_label_post_prob', 'in_file'),
-            (('out_label_post_prob', _get_extra), 'extra_values')]),
-        # (ref_join_labels, ref_join_voting_ds, [
-        #     ('out_atlas_voting_weight_name_format', 'in_file')]),
-        (mov_join_labels, mov_join_labels_ds, [('out_label_fusion', 'in_file')]),
-        (mov_join_labels, mov_join_probs_ds, [
-            ('out_label_post_prob', 'in_file'),
-            (('out_label_post_prob', _get_extra), 'extra_values')]),
         (pick_file, ref_norm_ds, [('out', 'source_file')]),
         (ref_norm, ref_norm_ds, [('warped_image', 'in_file')]),
         (pick_file, mov_norm_ds, [('out', 'source_file')]),
         (mov_norm, mov_norm_ds, [('warped_image', 'in_file')]),
-        (pick_file, ref_aparc_ds, [('out', 'source_file')]),
-        (ref_aparc, ref_aparc_ds, [('output_image', 'in_file')]),
-        (pick_file, mov_aparc_ds, [('out', 'source_file')]),
-        (mov_aparc, mov_aparc_ds, [('output_image', 'in_file')]),
-        # Mapping ref surfaces
-        (cifti_wf, gii2csv, [
-            (('outputnode.surf_norm', _discard_inflated), 'in_file')]),
-        (gii2csv, ref_map_surf, [('out_file', 'input_file')]),
-        (ref_norm, ref_map_surf, [
-            (('inverse_composite_transform', _ensure_list), 'transforms')]),
-        (ref_map_surf, ref_csv2gii, [('output_file', 'in_file')]),
-        (cifti_wf, ref_csv2gii, [
-            (('outputnode.surf_norm', _discard_inflated), 'gii_file')]),
-        (pick_file, ref_surfs_ds, [('out', 'source_file')]),
-        (ref_csv2gii, ref_surfs_ds, [
-            ('out_file', 'in_file'),
-            (('out_file', _get_surf_extra), 'extra_values')]),
-        (ref_csv2gii, ref_surfs_buffer, [('out_file', 'surfaces')]),
-        (ref_surfs_buffer, ref_surfs_unzip, [('surfaces', 'in_files')]),
-        (ref_surfs_unzip, ref_ply, [('out_files', 'in_files')]),
-        (ref_ply, ref_recon, [('out_file', 'in_file')]),
-        (ref_recon, ref_avggii, [('out_file', 'in_file')]),
-        (ref_surfs_unzip, ref_avggii, [('surf_keys', 'surf_key')]),
-        (ref_avggii, ref_smooth, [('out_file', 'in_file')]),
-        (ref_smooth, ref_avg_ds, [
-            ('surface', 'in_file'),
-            (('surface', _get_surf_extra), 'extra_values')]),
-
-        # Mapping mov surfaces
-        (gii2csv, mov_map_surf, [('out_file', 'input_file')]),
-        (mov_norm, mov_map_surf, [
-            (('inverse_composite_transform', _ensure_list), 'transforms')]),
-        (mov_map_surf, mov_csv2gii, [('output_file', 'in_file')]),
-        (cifti_wf, mov_csv2gii, [
-            (('outputnode.surf_norm', _discard_inflated), 'gii_file')]),
-        (pick_file, mov_surfs_ds, [('out', 'source_file')]),
-        (mov_csv2gii, mov_surfs_ds, [
-            ('out_file', 'in_file'),
-            (('out_file', _get_surf_extra), 'extra_values')]),
-        (mov_csv2gii, mov_surfs_buffer, [('out_file', 'surfaces')]),
-        (mov_surfs_buffer, mov_surfs_unzip, [('surfaces', 'in_files')]),
-        (mov_surfs_unzip, mov_ply, [('out_files', 'in_files')]),
-        (mov_ply, mov_recon, [('out_file', 'in_file')]),
-        (mov_recon, mov_avggii, [('out_file', 'in_file')]),
-        (mov_surfs_unzip, mov_avggii, [('surf_keys', 'surf_key')]),
-        (mov_avggii, mov_smooth, [('out_file', 'in_file')]),
-        (mov_smooth, mov_avg_ds, [
-            ('surface', 'in_file'),
-            (('surface', _get_surf_extra), 'extra_values')]),
     ])
+
+    if fs_subjects_dir:
+        fssource = pe.Node(
+            FreeSurferSource(subjects_dir=str(fs_subjects_dir)),
+            name='fssource', run_without_submitting=True)
+        tonative = pe.Node(fs.Label2Vol(subjects_dir=str(fs_subjects_dir)),
+                           name='tonative')
+        tonii = pe.Node(
+            fs.MRIConvert(out_type='niigz', resample_type='nearest'),
+            name='tonii')
+
+        ref_aparc = pe.Node(
+            ApplyTransforms(interpolation='MultiLabel', float=True,
+                            reference_image=tpl_ref, environ=ants_env),
+            name='ref_aparc', mem_gb=1, n_procs=omp_nthreads
+        )
+
+        mov_aparc = pe.Node(
+            ApplyTransforms(interpolation='MultiLabel', float=True,
+                            reference_image=tpl_mov, environ=ants_env),
+            name='mov_aparc', mem_gb=1, n_procs=omp_nthreads
+        )
+
+        ref_aparc_buffer = pe.JoinNode(
+            niu.IdentityInterface(fields=['aparc']),
+            joinsource='inputnode', joinfield='aparc', name='ref_aparc_buffer')
+
+        ref_join_labels = pe.Node(
+            AntsJointFusion(
+                target_image=[tpl_ref],
+                out_label_fusion='merged_aparc.nii.gz',
+                out_intensity_fusion_name_format='merged_aparc_intensity_%d.nii.gz',
+                out_label_post_prob_name_format='merged_aparc_posterior_%d.nii.gz',
+                out_atlas_voting_weight_name_format='merged_aparc_weight_%d.nii.gz',
+                environ=ants_env,
+            ),
+            name='ref_join_labels', n_procs=omp_nthreads)
+
+        ref_join_labels_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name,
+                suffix='dtissue', desc='aparc', keep_dtype=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
+            name='ref_join_labels_ds', run_without_submitting=True)
+
+        ref_join_probs_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name,
+                suffix='probtissue', desc='aparc', keep_dtype=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
+            name='ref_join_probs_ds', run_without_submitting=True)
+
+        # ref_join_voting_ds = pe.Node(
+        #     DerivativesDataSink(
+        #         base_directory=str(output_dir.parent),
+        #         out_path_base=output_dir.name, space=ref_template,
+        #         suffix='probtissue', desc='aparcvoting', keep_dtype=False,
+        #         source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
+        #     name='ref_join_voting_ds', run_without_submitting=True)
+
+        mov_aparc_buffer = pe.JoinNode(
+            niu.IdentityInterface(fields=['aparc']),
+            joinsource='inputnode', joinfield='aparc', name='mov_aparc_buffer')
+
+        mov_join_labels = pe.Node(
+            AntsJointFusion(
+                target_image=[tpl_mov],
+                out_label_fusion='merged_aparc.nii.gz',
+                out_intensity_fusion_name_format='merged_aparc_intensity_%d.nii.gz',
+                out_label_post_prob_name_format='merged_aparc_posterior_%d.nii.gz',
+                out_atlas_voting_weight_name_format='merged_aparc_weight_%d.nii.gz',
+                environ=ants_env,
+            ),
+            name='mov_join_labels', n_procs=omp_nthreads)
+
+        mov_join_labels_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name,
+                suffix='dtissue', desc='aparc', keep_dtype=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
+            name='mov_join_labels_ds', run_without_submitting=True)
+
+        mov_join_probs_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name,
+                suffix='probtissue', desc='aparc', keep_dtype=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
+            name='mov_join_probs_ds', run_without_submitting=True)
+
+        ref_aparc_ds = pe.Node(
+            DerivativesDataSink(base_directory=str(output_dir.parent),
+                                out_path_base=output_dir.name, space=ref_template,
+                                suffix='dtissue', desc='aparc', keep_dtype=False),
+            name='ref_aparc_ds', run_without_submitting=True
+        )
+
+        mov_aparc_ds = pe.Node(
+            DerivativesDataSink(base_directory=str(output_dir.parent),
+                                out_path_base=output_dir.name, space=mov_template,
+                                suffix='dtissue', desc='aparc', keep_dtype=False),
+            name='mov_aparc_ds', run_without_submitting=True
+        )
+        # Extract surfaces
+        cifti_wf = init_gifti_surface_wf(
+            name='cifti_surfaces',
+            subjects_dir=str(fs_subjects_dir))
+
+        # Move surfaces to template spaces
+        gii2csv = pe.MapNode(GiftiToCSV(itk_lps=True),
+                             iterfield=['in_file'], name='gii2csv')
+        ref_map_surf = pe.MapNode(
+            ApplyTransformsToPoints(dimension=3, environ=ants_env),
+            n_procs=omp_nthreads, name='ref_map_surf', iterfield=['input_file'])
+        ref_csv2gii = pe.MapNode(
+            CSVToGifti(itk_lps=True),
+            name='ref_csv2gii', iterfield=['in_file', 'gii_file'])
+        ref_surfs_buffer = pe.JoinNode(
+            niu.IdentityInterface(fields=['surfaces']),
+            joinsource='inputnode', joinfield='surfaces', name='ref_surfs_buffer')
+        ref_surfs_unzip = pe.Node(UnzipJoinedSurfaces(), name='ref_surfs_unzip',
+                                  run_without_submitting=True)
+        ref_ply = pe.MapNode(SurfacesToPointCloud(), name='ref_ply',
+                             iterfield=['in_files'])
+        ref_recon = pe.MapNode(PoissonRecon(), name='ref_recon',
+                               iterfield=['in_file'])
+        ref_avggii = pe.MapNode(PLYtoGifti(), name='ref_avggii',
+                                iterfield=['in_file', 'surf_key'])
+        ref_smooth = pe.MapNode(fs.SmoothTessellation(), name='ref_smooth',
+                                iterfield=['in_file'])
+
+        ref_surfs_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name, space=ref_template,
+                keep_dtype=False, compress=False),
+            name='ref_surfs_ds', run_without_submitting=True)
+        ref_avg_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name, space=ref_template,
+                keep_dtype=False, compress=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template)),
+            name='ref_avg_ds', run_without_submitting=True)
+
+        mov_map_surf = pe.MapNode(
+            ApplyTransformsToPoints(dimension=3, environ=ants_env),
+            n_procs=omp_nthreads, name='mov_map_surf', iterfield=['input_file'])
+        mov_csv2gii = pe.MapNode(
+            CSVToGifti(itk_lps=True),
+            name='mov_csv2gii', iterfield=['in_file', 'gii_file'])
+        mov_surfs_buffer = pe.JoinNode(
+            niu.IdentityInterface(fields=['surfaces']),
+            joinsource='inputnode', joinfield='surfaces', name='mov_surfs_buffer')
+        mov_surfs_unzip = pe.Node(UnzipJoinedSurfaces(), name='mov_surfs_unzip',
+                                  run_without_submitting=True)
+        mov_ply = pe.MapNode(SurfacesToPointCloud(), name='mov_ply',
+                             iterfield=['in_files'])
+        mov_recon = pe.MapNode(PoissonRecon(), name='mov_recon',
+                               iterfield=['in_file'])
+        mov_avggii = pe.MapNode(PLYtoGifti(), name='mov_avggii',
+                                iterfield=['in_file', 'surf_key'])
+        mov_smooth = pe.MapNode(fs.SmoothTessellation(), name='mov_smooth',
+                                iterfield=['in_file'])
+
+        mov_surfs_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name, space=mov_template,
+                keep_dtype=False, compress=False),
+            name='mov_surfs_ds', run_without_submitting=True)
+        mov_avg_ds = pe.Node(
+            DerivativesDataSink(
+                base_directory=str(output_dir.parent),
+                out_path_base=output_dir.name, space=mov_template,
+                keep_dtype=False, compress=False,
+                source_file='group/tpl-{0}_T1w.nii.gz'.format(mov_template)),
+            name='mov_avg_ds', run_without_submitting=True)
+
+        wf.connect([
+            (inputnode, fssource, [(('participant_label', _sub_decorate), 'subject_id')]),
+            (inputnode, cifti_wf, [
+                (('participant_label', _sub_decorate), 'inputnode.subject_id')]),
+            (pick_file, cifti_wf, [('out', 'inputnode.in_t1w')]),
+            (pick_file, tonii, [('out', 'reslice_like')]),
+            # Select DKT aparc
+            (fssource, tonative, [(('aparc_aseg', _last), 'seg_file'),
+                                  ('rawavg', 'template_file'),
+                                  ('aseg', 'reg_header')]),
+            (tonative, tonii, [('vol_label_file', 'in_file')]),
+            (tonii, ref_aparc, [('out_file', 'input_image')]),
+            (tonii, mov_aparc, [('out_file', 'input_image')]),
+            (ref_norm, ref_aparc, [('composite_transform', 'transforms')]),
+            (mov_norm, mov_aparc, [('composite_transform', 'transforms')]),
+            (ref_buffer, ref_join_labels, [
+                ('fixed_image', 'atlas_image')]),
+            (ref_aparc, ref_aparc_buffer, [('output_image', 'aparc')]),
+            (ref_aparc_buffer, ref_join_labels, [
+                ('aparc', 'atlas_segmentation_image')]),
+            (mov_buffer, mov_join_labels, [
+                ('moving_image', 'atlas_image')]),
+            (mov_aparc, mov_aparc_buffer, [('output_image', 'aparc')]),
+            (mov_aparc_buffer, mov_join_labels, [
+                ('aparc', 'atlas_segmentation_image')]),
+            # Datasinks
+            (ref_join_labels, ref_join_labels_ds, [('out_label_fusion', 'in_file')]),
+            (ref_join_labels, ref_join_probs_ds, [
+                ('out_label_post_prob', 'in_file'),
+                (('out_label_post_prob', _get_extra), 'extra_values')]),
+            # (ref_join_labels, ref_join_voting_ds, [
+            #     ('out_atlas_voting_weight_name_format', 'in_file')]),
+            (mov_join_labels, mov_join_labels_ds, [('out_label_fusion', 'in_file')]),
+            (mov_join_labels, mov_join_probs_ds, [
+                ('out_label_post_prob', 'in_file'),
+                (('out_label_post_prob', _get_extra), 'extra_values')]),
+            (pick_file, ref_aparc_ds, [('out', 'source_file')]),
+            (ref_aparc, ref_aparc_ds, [('output_image', 'in_file')]),
+            (pick_file, mov_aparc_ds, [('out', 'source_file')]),
+            (mov_aparc, mov_aparc_ds, [('output_image', 'in_file')]),
+            # Mapping ref surfaces
+            (cifti_wf, gii2csv, [
+                (('outputnode.surf_norm', _discard_inflated), 'in_file')]),
+            (gii2csv, ref_map_surf, [('out_file', 'input_file')]),
+            (ref_norm, ref_map_surf, [
+                (('inverse_composite_transform', _ensure_list), 'transforms')]),
+            (ref_map_surf, ref_csv2gii, [('output_file', 'in_file')]),
+            (cifti_wf, ref_csv2gii, [
+                (('outputnode.surf_norm', _discard_inflated), 'gii_file')]),
+            (pick_file, ref_surfs_ds, [('out', 'source_file')]),
+            (ref_csv2gii, ref_surfs_ds, [
+                ('out_file', 'in_file'),
+                (('out_file', _get_surf_extra), 'extra_values')]),
+            (ref_csv2gii, ref_surfs_buffer, [('out_file', 'surfaces')]),
+            (ref_surfs_buffer, ref_surfs_unzip, [('surfaces', 'in_files')]),
+            (ref_surfs_unzip, ref_ply, [('out_files', 'in_files')]),
+            (ref_ply, ref_recon, [('out_file', 'in_file')]),
+            (ref_recon, ref_avggii, [('out_file', 'in_file')]),
+            (ref_surfs_unzip, ref_avggii, [('surf_keys', 'surf_key')]),
+            (ref_avggii, ref_smooth, [('out_file', 'in_file')]),
+            (ref_smooth, ref_avg_ds, [
+                ('surface', 'in_file'),
+                (('surface', _get_surf_extra), 'extra_values')]),
+
+            # Mapping mov surfaces
+            (gii2csv, mov_map_surf, [('out_file', 'input_file')]),
+            (mov_norm, mov_map_surf, [
+                (('inverse_composite_transform', _ensure_list), 'transforms')]),
+            (mov_map_surf, mov_csv2gii, [('output_file', 'in_file')]),
+            (cifti_wf, mov_csv2gii, [
+                (('outputnode.surf_norm', _discard_inflated), 'gii_file')]),
+            (pick_file, mov_surfs_ds, [('out', 'source_file')]),
+            (mov_csv2gii, mov_surfs_ds, [
+                ('out_file', 'in_file'),
+                (('out_file', _get_surf_extra), 'extra_values')]),
+            (mov_csv2gii, mov_surfs_buffer, [('out_file', 'surfaces')]),
+            (mov_surfs_buffer, mov_surfs_unzip, [('surfaces', 'in_files')]),
+            (mov_surfs_unzip, mov_ply, [('out_files', 'in_files')]),
+            (mov_ply, mov_recon, [('out_file', 'in_file')]),
+            (mov_recon, mov_avggii, [('out_file', 'in_file')]),
+            (mov_surfs_unzip, mov_avggii, [('surf_keys', 'surf_key')]),
+            (mov_avggii, mov_smooth, [('out_file', 'in_file')]),
+            (mov_smooth, mov_avg_ds, [
+                ('surface', 'in_file'),
+                (('surface', _get_surf_extra), 'extra_values')]),
+        ])
+
     return wf
 
 
@@ -581,8 +576,7 @@ def cli():
     parser.add_argument('-w', '--work-dir', action='store', type=Path,
                         default=Path() / 'work', help='work directory')
     parser.add_argument('--freesurfer', action='store', type=Path,
-                        help='path to precomputed freesurfer results',
-                        default=Path(getenv('SUBJECTS_DIR', 'freesurfer/')).resolve())
+                        help='path to precomputed freesurfer results')
     opts = parser.parse_args()
 
     plugin_settings = {'plugin': 'Linear'}
