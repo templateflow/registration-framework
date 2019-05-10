@@ -11,7 +11,7 @@ TemplateFlow: registration workflows
 # general purpose
 import pkg_resources as pkgr
 import logging
-from os import getenv, cpu_count
+from os import cpu_count
 
 # nipype
 from nipype import logging as nlogging
@@ -28,7 +28,6 @@ from niworkflows.interfaces.fixes import (
     FixHeaderRegistration as Registration,
     FixHeaderApplyTransforms as ApplyTransforms,
 )
-from niworkflows.interfaces.bids import DerivativesDataSink as DDS
 from niworkflows.interfaces.surf import (
     GiftiToCSV, CSVToGifti, SurfacesToPointCloud, PoissonRecon,
     UnzipJoinedSurfaces, PLYtoGifti,
@@ -36,9 +35,8 @@ from niworkflows.interfaces.surf import (
 from niworkflows.anat.ants import init_brain_extraction_wf
 from niworkflows.anat.freesurfer import init_gifti_surface_wf
 
+from datasink import DerivativesDataSink
 
-class DerivativesDataSink(DDS):
-    out_path_base = 'templateflowreg'
 
 
 def init_templateflow_wf(
@@ -203,6 +201,13 @@ def init_templateflow_wf(
         name='mov_norm_ds', run_without_submitting=True
     )
 
+    xfm_ds = pe.Node(DerivativesDataSink(
+        base_directory=str(output_dir.parent), out_path_base=output_dir.name,
+        allowed_entities=['from', 'mode'], mode='image', suffix='xfm',
+        source_file='group/tpl-{0}_T1w.nii.gz'.format(ref_template),
+        **{'from': mov_template}),
+        name='xfm_ds', run_without_submitting=True)
+
     wf.connect([
         (inputnode, pick_file, [('participant_label', 'participant_label')]),
         (pick_file, ref_bex, [('out', 'inputnode.in_files')]),
@@ -222,6 +227,7 @@ def init_templateflow_wf(
         (ref_norm, ref_norm_ds, [('warped_image', 'in_file')]),
         (pick_file, mov_norm_ds, [('out', 'source_file')]),
         (mov_norm, mov_norm_ds, [('warped_image', 'in_file')]),
+        (flow, xfm_ds, [('composite_transform', 'in_file')]),
     ])
 
     if fs_subjects_dir:
